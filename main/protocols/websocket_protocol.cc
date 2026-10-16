@@ -12,13 +12,43 @@
 
 #define TAG "WS"
 
-WebsocketProtocol::WebsocketProtocol() { event_group_handle_ = xEventGroupCreate(); }
+#define WEBSOCKET_KEEPALIVE_INTERVAL_MS 30000
 
-WebsocketProtocol::~WebsocketProtocol() { vEventGroupDelete(event_group_handle_); }
+WebsocketProtocol::WebsocketProtocol() {
+    event_group_handle_ = xEventGroupCreate();
+
+    // 保活定时器：连接期间所有状态都发心跳；仅在空闲时执行重连
+    esp_timer_create_args_t keepalive_args = {
+        .callback =
+            [](void* arg) {
+                WebsocketProtocol* protocol = (WebsocketProtocol*)arg;
+                auto alive = protocol->alive_;
+                Application::GetInstance().Schedule([protocol, alive]() {
+                    if (*alive) {
+                        protocol->SendPing();
+                    }
+                });
+            },
+        .arg = this,
+    };
+    esp_timer_create(&keepalive_args, &keepalive_timer_);
+    esp_timer_start_periodic(keepalive_timer_, WEBSOCKET_KEEPALIVE_INTERVAL_MS * 1000);
+}
+
+WebsocketProtocol::~WebsocketProtocol() {
+    *alive_ = false;
+    if (keepalive_timer_ != nullptr) {
+        esp_timer_stop(keepalive_timer_);
+        esp_timer_delete(keepalive_timer_);
+        keepalive_timer_ = nullptr;
+    }
+    vEventGroupDelete(event_group_handle_);
+}
 
 bool WebsocketProtocol::Start() {
-    // Only connect to server when audio channel is needed
-    return true;
+    // WS 常连：开机即建立并保持连接（服务端主动推送依赖此连接）；
+    // 失败静默，由保活定时器重试（对齐 MqttProtocol 的 report_error=false）
+    return OpenAudioChannelQuietly();
 }
 
 bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
@@ -60,11 +90,34 @@ bool WebsocketProtocol::SendText(const std::string& text) {
 
     if (!websocket_->Send(text)) {
         ESP_LOGE(TAG, "Failed to send text: %s", text.c_str());
-        SetError(Lang::Strings::SERVER_ERROR);
+        if (!suppress_errors_) {
+            SetError(Lang::Strings::SERVER_ERROR);
+        }
         return false;
     }
 
     return true;
+}
+
+bool WebsocketProtocol::OpenAudioChannelQuietly() {
+    suppress_errors_ = true;
+    bool ok = OpenAudioChannel();
+    suppress_errors_ = false;
+    return ok;
+}
+
+void WebsocketProtocol::SendPing() {
+    if (IsAudioChannelOpened()) {
+        SendText("{\"type\":\"ping\"}");
+        ESP_LOGI(TAG, "Keepalive ping sent");
+        return;
+    }
+    // 未连接：仅在空闲时重连（避免打断进行中的对话流程；重连走静默模式）
+    if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle) {
+        return;
+    }
+    ESP_LOGI(TAG, "Websocket not connected, reconnecting...");
+    OpenAudioChannelQuietly();
 }
 
 bool WebsocketProtocol::IsAudioChannelOpened() const {
@@ -169,7 +222,9 @@ bool WebsocketProtocol::OpenAudioChannel() {
     if (auto connected = websocket_->Connect(url.c_str()); !connected) {
         ESP_LOGE(TAG, "Failed to connect to websocket server: %s",
                  connected.error().ToString().c_str());
-        SetError(Lang::Strings::SERVER_NOT_CONNECTED, url);
+        if (!suppress_errors_) {
+            SetError(Lang::Strings::SERVER_NOT_CONNECTED, url);
+        }
         return false;
     }
 
@@ -185,7 +240,9 @@ bool WebsocketProtocol::OpenAudioChannel() {
                             pdFALSE, pdMS_TO_TICKS(10000));
     if (!(bits & WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT)) {
         ESP_LOGE(TAG, "Failed to receive server hello");
-        SetError(Lang::Strings::SERVER_TIMEOUT);
+        if (!suppress_errors_) {
+            SetError(Lang::Strings::SERVER_TIMEOUT);
+        }
         return false;
     }
 

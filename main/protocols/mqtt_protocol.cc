@@ -84,6 +84,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     auto password = settings.GetString("password");
     int keepalive_interval = settings.GetInt("keepalive", 240);
     publish_topic_ = settings.GetString("publish_topic");
+    subscribe_topic_ = settings.GetString("subscribe_topic");
 
     if (endpoint.empty()) {
         ESP_LOGW(TAG, "MQTT endpoint is not specified");
@@ -111,6 +112,10 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
             on_connected_();
         }
         esp_timer_stop(reconnect_timer_);
+        // 恢复下行订阅：服务端主动推送（notify 等）依赖订阅 devices/p2p/{mac}
+        if (!subscribe_topic_.empty() && !mqtt_->Subscribe(subscribe_topic_, 2)) {
+            ESP_LOGW(TAG, "Failed to subscribe topic: %s", subscribe_topic_.c_str());
+        }
     });
 
     mqtt_->OnMessage([this](const std::string& topic, const std::string& payload) {

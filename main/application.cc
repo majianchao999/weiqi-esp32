@@ -614,6 +614,40 @@ void Application::InitializeProtocol() {
 
             Schedule([this, url = std::string(audio_url->valuestring),
                       subtitles = std::move(subtitles)]() mutable {
+                auto state = GetDeviceState();
+                // 推送最高优先级：可打断进行中的对话、音乐/播报、上一条推送。
+                // 升级/激活/配网等关键过程除外（打断有变砖风险）。
+                if (state == kDeviceStateUnknown || state == kDeviceStateStarting ||
+                    state == kDeviceStateWifiConfiguring || state == kDeviceStateActivating ||
+                    state == kDeviceStateUpgrading || state == kDeviceStateFatalError) {
+                    ESP_LOGW(TAG, "Ignoring notify in critical state %d", static_cast<int>(state));
+                    return;
+                }
+                if (state == kDeviceStateNotifying) {
+                    ESP_LOGI(TAG, "Preempting previous notification");
+                    StopNotification();
+                } else if (state != kDeviceStateIdle) {
+                    ESP_LOGI(TAG, "Preempting ongoing conversation for notification");
+                    if (state == kDeviceStateSpeaking) {
+                        AbortSpeaking(kAbortReasonNone);
+                    } else if (state == kDeviceStateListening) {
+                        if (protocol_) {
+                            protocol_->SendStopListening();
+                        }
+                    }
+                    SetDeviceState(kDeviceStateIdle);
+                }
+                // notify_player_.Stop() only flips the cancel flag; the HTTP worker
+                // clears worker_running_ asynchronously, so IsBusy() can still be true
+                // when StartNotification() checks its guard. Wait (bounded) for the
+                // previous worker task to exit before starting the new notification.
+                for (int i = 0; i < 50 && notify_player_.IsBusy(); ++i) {
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                }
+                if (notify_player_.IsBusy()) {
+                    ESP_LOGW(TAG, "Previous notification still stopping; dropping new notify");
+                    return;
+                }
                 StartNotification(std::move(url), std::move(subtitles));
             });
         } else if (strcmp(type->valuestring, "tts") == 0) {
@@ -717,6 +751,8 @@ void Application::InitializeProtocol() {
                 ESP_LOGW(TAG, "Invalid custom message format: missing payload");
             }
 #endif
+        } else if (strcmp(type->valuestring, "pong") == 0) {
+            // 心跳回包，静默忽略
         } else {
             ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);
         }
