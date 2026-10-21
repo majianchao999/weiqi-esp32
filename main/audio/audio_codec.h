@@ -40,6 +40,11 @@ public:
 
     inline bool duplex() const { return duplex_; }
     inline bool input_reference() const { return input_reference_; }
+    // True when the reference channel is synthesized from the playback buffer
+    // instead of being captured by a hardware echo-reference ADC.
+    virtual bool has_software_reference() const { return false; }
+    // True while the speaker is reproducing (or about to reproduce) audio.
+    virtual bool is_playback_active() { return false; }
     inline int input_sample_rate() const { return input_sample_rate_; }
     inline int output_sample_rate() const { return output_sample_rate_; }
     inline int input_channels() const { return input_channels_; }

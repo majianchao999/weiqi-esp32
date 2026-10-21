@@ -29,6 +29,9 @@ public:
     void Feed(const std::vector<int16_t>& data);
     void FeedMono(const int16_t* data, size_t samples);
     void OnWakeWordDetected(std::function<void(const std::string& wake_word)> callback);
+    // Playback is audible right now; used to reject weak matches that are
+    // actually the assistant's own TTS ("小麦" vs "小稷").
+    void SetPlaybackActive(bool active) { playback_active_ = active; }
     void Start();
     void Stop();
     size_t GetFeedSize();
@@ -58,6 +61,7 @@ private:
     AudioCodec* codec_ = nullptr;
     std::string last_detected_wake_word_;
     std::atomic<bool> running_ = false;
+    bool playback_active_ = false;
     std::vector<int16_t> input_buffer_;
     std::mutex input_buffer_mutex_;
 

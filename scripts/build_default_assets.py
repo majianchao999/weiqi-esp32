@@ -633,6 +633,11 @@ def read_wake_word_type_from_sdkconfig(sdkconfig_path):
     return config_values
 
 
+def split_wake_word_commands(value):
+    """Split a semicolon-separated custom wake-word list into pinyin phrases."""
+    return [phrase.strip() for phrase in value.split(";") if phrase.strip()]
+
+
 def read_custom_wake_word_from_sdkconfig(sdkconfig_path):
     """
     Read custom wake word configuration from sdkconfig
@@ -677,8 +682,12 @@ def read_custom_wake_word_from_sdkconfig(sdkconfig_path):
         'wake_word' in config_values and 
         'display' in config_values and 
         'threshold' in config_values):
+        wake_words = split_wake_word_commands(config_values['wake_word'])
+        if not wake_words:
+            return None
         return {
             'wake_word': config_values['wake_word'],
+            'wake_words': wake_words,
             'display': config_values['display'],
             'threshold': config_values['threshold'] / 100.0  # Convert to decimal (20 -> 0.2)
         }
@@ -771,18 +780,18 @@ def get_emoji_collection_path(default_emoji_collection, noto_fonts_path, project
     """
     Get the emoji collection path if needed
     Returns the emoji directory path or None if no emoji collection is needed
-    
+
     Supports:
     - PNG emoji collections from noto-fonts (e.g., noto-color-emoji_32)
     - Otto GIF emoji collection (otto-gif)
     """
     if not default_emoji_collection:
         return None
-    
+
     # Special handling for otto-gif collection
     if default_emoji_collection == 'otto-gif':
         if project_root:
-            otto_gif_path = os.path.join(project_root, 'managed_components', 
+            otto_gif_path = os.path.join(project_root, 'managed_components',
                                         'txp666__otto-emoji-gif-component', 'gifs')
             if os.path.exists(otto_gif_path):
                 return otto_gif_path
@@ -792,7 +801,7 @@ def get_emoji_collection_path(default_emoji_collection, noto_fonts_path, project
         else:
             print("Warning: project_root not provided, cannot locate otto-gif collection")
             return None
-    
+
     # Try PNG emoji collections first.
     emoji_path = os.path.join(noto_fonts_path, 'png', default_emoji_collection)
     if os.path.exists(emoji_path):
@@ -964,7 +973,7 @@ def main():
             raise ValueError("noto-fonts manifest.json must define bundle_id")
     
     # Get emoji collection path if needed
-    # Calculate project root from script location for otto-gif support
+    # Calculate project root from script location
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     emoji_collection_path = get_emoji_collection_path(args.emoji_collection, args.noto_fonts_path, project_root)
@@ -987,13 +996,15 @@ def main():
             "threshold": custom_wake_word_config['threshold'],
             "commands": [
                 {
-                    "command": custom_wake_word_config['wake_word'],
+                    "command": phrase,
                     "text": custom_wake_word_config['display'],
                     "action": "wake"
                 }
+                for phrase in custom_wake_word_config['wake_words']
             ]
         }
-        print(f"  custom wake word: {custom_wake_word_config['wake_word']} ({custom_wake_word_config['display']})")
+        print(f"  custom wake words: {'; '.join(custom_wake_word_config['wake_words'])} "
+              f"({custom_wake_word_config['display']})")
         print(f"  wake word language: {language}")
         print(f"  wake word threshold: {custom_wake_word_config['threshold']}")
     

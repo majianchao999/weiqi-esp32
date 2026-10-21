@@ -55,6 +55,7 @@ public:
     virtual void SetEmojiCollection(std::shared_ptr<EmojiCollection>) {}
     virtual void SetupUI() { setup_ui_called_ = true; }
     virtual bool IsMonochrome() const { return false; }
+    virtual bool IsLvglDisplay() const { return false; }
     virtual bool SupportsGuiOperations() const { return false; }
     virtual void SetHideSubtitle(bool hide) { (void)hide; }
     virtual bool InsertAnimDialog(const char* name, uint32_t duration_ms) {

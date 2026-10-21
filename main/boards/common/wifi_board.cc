@@ -23,8 +23,11 @@
 
 static const char *TAG = "WifiBoard";
 
-// Connection timeout in seconds
-static constexpr int CONNECT_TIMEOUT_SEC = 60;
+// Connection timeout in seconds. Keep this short enough that a headless
+// device does not sit silently for a minute after a failed Wi-Fi boot.
+static constexpr int CONNECT_TIMEOUT_SEC = 25;
+// Play a short audible reminder while the saved Wi-Fi is still being retried.
+static constexpr int CONNECT_REMINDER_INTERVAL_SEC = 8;
 
 WifiBoard::WifiBoard() {
     // Create connection timeout timer
@@ -36,12 +39,33 @@ WifiBoard::WifiBoard() {
         .skip_unhandled_events = true
     };
     esp_timer_create(&timer_args, &connect_timer_);
+
+    esp_timer_create_args_t reminder_args = {
+        .callback = OnWifiConnectReminder,
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "wifi_connect_reminder",
+        .skip_unhandled_events = true
+    };
+    esp_timer_create(&reminder_args, &connect_reminder_timer_);
 }
 
 WifiBoard::~WifiBoard() {
+    StopConnectTimers();
+    if (connect_timer_) {
+        esp_timer_delete(connect_timer_);
+    }
+    if (connect_reminder_timer_) {
+        esp_timer_delete(connect_reminder_timer_);
+    }
+}
+
+void WifiBoard::StopConnectTimers() {
     if (connect_timer_) {
         esp_timer_stop(connect_timer_);
-        esp_timer_delete(connect_timer_);
+    }
+    if (connect_reminder_timer_) {
+        esp_timer_stop(connect_reminder_timer_);
     }
 }
 
@@ -105,6 +129,10 @@ void WifiBoard::TryWifiConnect() {
         // Start connection attempt with timeout
         ESP_LOGI(TAG, "Starting WiFi connection attempt");
         esp_timer_start_once(connect_timer_, CONNECT_TIMEOUT_SEC * 1000000ULL);
+        esp_timer_start_periodic(connect_reminder_timer_,
+                                 CONNECT_REMINDER_INTERVAL_SEC * 1000000ULL);
+        // Give immediate audible feedback even on the no-display variant.
+        Application::GetInstance().PlaySound(Lang::Sounds::OGG_POPUP);
         WifiManager::GetInstance().StartStation();
     } else {
         // No SSID configured, enter config mode
@@ -117,8 +145,8 @@ void WifiBoard::TryWifiConnect() {
 void WifiBoard::OnNetworkEvent(NetworkEvent event, const std::string& data) {
     switch (event) {
         case NetworkEvent::Connected:
-            // Stop timeout timer
-            esp_timer_stop(connect_timer_);
+            // Stop timeout and reminder timers
+            StopConnectTimers();
 #ifdef CONFIG_USE_ESP_BLUFI_WIFI_PROVISIONING
             // make sure blufi resources has been released
             Blufi::GetInstance().deinit();
@@ -163,11 +191,23 @@ void WifiBoard::OnWifiConnectTimeout(void* arg) {
     auto* board = static_cast<WifiBoard*>(arg);
     ESP_LOGW(TAG, "WiFi connection timeout, entering config mode");
 
+    board->StopConnectTimers();
     WifiManager::GetInstance().StopStation();
     board->StartWifiConfigMode();
 }
 
+void WifiBoard::OnWifiConnectReminder(void* arg) {
+    auto* board = static_cast<WifiBoard*>(arg);
+    if (Application::GetInstance().GetDeviceState() != kDeviceStateStarting) {
+        esp_timer_stop(board->connect_reminder_timer_);
+        return;
+    }
+    // A soft pop tells the user the device is still alive and scanning.
+    Application::GetInstance().PlaySound(Lang::Sounds::OGG_POPUP);
+}
+
 void WifiBoard::StartWifiConfigMode() {
+    StopConnectTimers();
     in_config_mode_ = true;
     // Transition to wifi configuring state
     Application::GetInstance().SetDeviceState(kDeviceStateWifiConfiguring);
@@ -211,7 +251,7 @@ void WifiBoard::EnterWifiConfigMode() {
             vTaskDelay(pdMS_TO_TICKS(1000));
 
             // Stop any ongoing connection attempt
-            esp_timer_stop(board->connect_timer_);
+            board->StopConnectTimers();
             WifiManager::GetInstance().StopStation();
 
             // Enter config mode
@@ -228,7 +268,7 @@ void WifiBoard::EnterWifiConfigMode() {
     }
 
     // Stop any ongoing connection attempt
-    esp_timer_stop(connect_timer_);
+    StopConnectTimers();
     WifiManager::GetInstance().StopStation();
 
     StartWifiConfigMode();

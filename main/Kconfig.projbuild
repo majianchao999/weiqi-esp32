@@ -413,6 +413,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_OTTO_ROBOT
         bool "Otto Robot"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_WEIQI
+        bool "Weiqi (维奇)"
+        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_QUANDONG_S3_DEV
         bool "Quandong ESP32-S3 Development Board (全动)"
         depends on IDF_TARGET_ESP32S3
@@ -736,6 +739,19 @@ choice DISPLAY_OLED_TYPE
         bool "SH1106 128*64"
 endchoice
 
+choice WEIQI_DISPLAY_TYPE
+    depends on BOARD_TYPE_WEIQI
+    prompt "Weiqi Display"
+    default WEIQI_DISPLAY_NONE
+    help
+        Weiqi board display option. Hardware design is proprietary; select the
+        panel that is fitted to your board.
+    config WEIQI_DISPLAY_NONE
+        bool "No display"
+    config WEIQI_DISPLAY_ST7789_240X240
+        bool "ST7789 240*240"
+endchoice
+
 
 choice DISPLAY_LCD_TYPE
     depends on BOARD_TYPE_BREAD_COMPACT_WIFI_LCD || BOARD_TYPE_BREAD_COMPACT_ESP32_LCD || BOARD_TYPE_WDMOMO_CGC || BOARD_TYPE_BREAD_COMPACT_WIFI_CAM || (BOARD_TYPE_WK_ESP32S3_DEV && WK_ESP32S3_DEV_DISPLAY_LCD)
@@ -915,7 +931,9 @@ config CUSTOM_WAKE_WORD
     default "xiao tu dou"
     depends on USE_CUSTOM_WAKE_WORD
     help
-        Custom Wake Word, use pinyin for Chinese, separated by spaces
+        Custom Wake Word, use pinyin for Chinese, separated by spaces.
+        Separate multiple wake phrases with semicolons (for example:
+        "xiao ji;ni hao xiao ji;xiao ji xiao ji;xiao ji tong xue").
 
 config CUSTOM_WAKE_WORD_DISPLAY
     string "Custom Wake Word Display"

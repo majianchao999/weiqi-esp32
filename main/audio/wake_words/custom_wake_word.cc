@@ -9,6 +9,8 @@
 #include <esp_mn_speech_commands.h>
 #include <cJSON.h>
 
+#include <sstream>
+
 #define TAG "CustomWakeWord"
 
 CustomWakeWord::CustomWakeWord()
@@ -92,7 +94,18 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         owns_models_ = models_ != nullptr;
 #ifdef CONFIG_CUSTOM_WAKE_WORD
         threshold_ = CONFIG_CUSTOM_WAKE_WORD_THRESHOLD / 100.0f;
-        commands_.push_back({CONFIG_CUSTOM_WAKE_WORD, CONFIG_CUSTOM_WAKE_WORD_DISPLAY, "wake"});
+        // 支持用英文分号配置多个唤醒词，全部映射到同一个显示/问候文本。
+        std::stringstream commands_stream(CONFIG_CUSTOM_WAKE_WORD);
+        std::string command;
+        while (std::getline(commands_stream, command, ';')) {
+            auto start = command.find_first_not_of(" \t");
+            if (start == std::string::npos) {
+                continue;
+            }
+            auto end = command.find_last_not_of(" \t");
+            commands_.push_back(
+                {command.substr(start, end - start + 1), CONFIG_CUSTOM_WAKE_WORD_DISPLAY, "wake"});
+        }
 #endif
     } else {
         models_ = models_list;
@@ -141,6 +154,7 @@ void CustomWakeWord::OnWakeWordDetected(std::function<void(const std::string& wa
 
 void CustomWakeWord::Start() {
     running_ = true;
+    ESP_LOGI(TAG, "MultiNet wake word detection started");
 }
 
 void CustomWakeWord::Stop() {
@@ -148,6 +162,7 @@ void CustomWakeWord::Stop() {
 
     std::lock_guard<std::mutex> lock(input_buffer_mutex_);
     input_buffer_.clear();
+    ESP_LOGI(TAG, "MultiNet wake word detection stopped");
 }
 
 void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
@@ -167,6 +182,28 @@ void CustomWakeWord::FeedSamples(const int16_t* data, size_t samples, bool mono)
     // Check running state inside lock to avoid TOCTOU race with Stop()
     if (!running_) {
         return;
+    }
+
+    // Diagnostic: while playing audio the mic is dominated by speaker echo.
+    // Logging the peak level and backlog distinguishes clipping/stall from a
+    // mere confidence drop when interruption fails.
+    static int64_t last_level_log_us = 0;
+    int64_t now_us = esp_timer_get_time();
+    if (now_us - last_level_log_us >= 2000000) {
+        last_level_log_us = now_us;
+        int32_t peak = 0;
+        for (size_t i = 0; i < samples; ++i) {
+            int32_t value = data[i];
+            if (value < 0) {
+                value = -value;
+            }
+            if (value > peak) {
+                peak = value;
+            }
+        }
+        ESP_LOGI(TAG, "Wake word input: peak=%ld samples=%u backlog=%u",
+                 static_cast<long>(peak), static_cast<unsigned>(samples),
+                 static_cast<unsigned>(input_buffer_.size()));
     }
 
     // If input channels is 2, we need to fetch the left channel data
@@ -189,7 +226,19 @@ void CustomWakeWord::FeedSamples(const int16_t* data, size_t samples, bool mono)
         if (mn_state == ESP_MN_STATE_DETECTED) {
             esp_mn_results_t *mn_result = multinet_->get_results(multinet_model_data_);
             for (int i = 0; i < mn_result->num && running_; i++) {
-                ESP_LOGI(TAG, "Custom wake word detected: command_id=%d, string=%s, prob=%f", 
+                // While TTS is playing, "小稷" is easily confused with "小麦"
+                // (the assistant talks about wheat a lot) and with its own
+                // echo. Require a stronger match during playback; idle
+                // detection keeps the configured threshold.
+                constexpr float kPlaybackMinProb = 0.20f;
+                if (playback_active_ && mn_result->prob[i] < kPlaybackMinProb) {
+                    ESP_LOGI(TAG,
+                             "Ignoring low-confidence wake word during playback: "
+                             "command_id=%d, prob=%f",
+                             mn_result->command_id[i], mn_result->prob[i]);
+                    continue;
+                }
+                ESP_LOGI(TAG, "Custom wake word detected: command_id=%d, string=%s, prob=%f",
                         mn_result->command_id[i], mn_result->string, mn_result->prob[i]);
                 auto& command = commands_[mn_result->command_id[i] - 1];
                 if (command.action == "wake") {

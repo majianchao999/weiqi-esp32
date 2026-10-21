@@ -32,6 +32,7 @@ public:
     virtual void ClearTextGlyphs() override;
     virtual bool SetTextFont(std::shared_ptr<LvglFont> text_font) override;
     virtual bool SupportsGuiOperations() const override { return true; }
+    virtual bool IsLvglDisplay() const override { return true; }
 
 protected:
     esp_pm_lock_handle_t pm_lock_ = nullptr;

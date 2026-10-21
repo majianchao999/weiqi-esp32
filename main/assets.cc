@@ -280,6 +280,16 @@ bool Assets::LvglStrategy::Apply(Assets* assets, bool refresh_display_theme) {
 
     Assets::LoadSrmodelsFromIndex(assets, root.get());
 
+    // Everything below registers LVGL resources (fonts/emoji/skin/themes) and
+    // allocates through the LVGL heap. Boards without an LVGL display (e.g. the
+    // no-display variant using NoDisplay) never initialize LVGL, so these assets
+    // must be skipped - otherwise font registration crashes in lv_malloc.
+    auto display = Board::GetInstance().GetDisplay();
+    if (display == nullptr || !display->IsLvglDisplay()) {
+        ESP_LOGI(TAG, "Display is not LVGL-based, skipping LVGL assets (font/emoji/skin/theme)");
+        return true;
+    }
+
     auto& theme_manager = LvglThemeManager::GetInstance();
     auto light_theme = theme_manager.GetTheme("light");
     auto dark_theme = theme_manager.GetTheme("dark");
@@ -289,7 +299,6 @@ bool Assets::LvglStrategy::Apply(Assets* assets, bool refresh_display_theme) {
         std::string fonts_text_file = font->valuestring;
         if (assets->GetAssetData(fonts_text_file, ptr, size)) {
             auto text_font = std::make_shared<LvglCBinFont>(ptr);
-            auto display = Board::GetInstance().GetDisplay();
             if (text_font->font() == nullptr || display == nullptr ||
                 !display->SetTextFont(text_font)) {
                 ESP_LOGW(TAG, "Ignoring invalid text font asset %s", fonts_text_file.c_str());
@@ -411,7 +420,6 @@ bool Assets::LvglStrategy::Apply(Assets* assets, bool refresh_display_theme) {
     }
 
     if (refresh_display_theme) {
-        auto display = Board::GetInstance().GetDisplay();
         ESP_LOGI(TAG, "Refreshing display theme...");
 
         auto current_theme = display->GetTheme();

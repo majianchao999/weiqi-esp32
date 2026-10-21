@@ -78,6 +78,30 @@ class BuildDefaultAssetsTest(unittest.TestCase):
             self.assertTrue(output.exists())
             self.assertLessEqual(output.stat().st_size, 64 * 1024)
 
+    def test_custom_wake_word_supports_multiple_phrases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sdkconfig = Path(directory) / "sdkconfig"
+            sdkconfig.write_text(
+                "\n".join(
+                    [
+                        "CONFIG_USE_CUSTOM_WAKE_WORD=y",
+                        'CONFIG_CUSTOM_WAKE_WORD="xiao ji; ni hao xiao ji;xiao ji xiao ji;xiao ji tong xue"',
+                        'CONFIG_CUSTOM_WAKE_WORD_DISPLAY="小稷"',
+                        "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=20",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = BUILD.read_custom_wake_word_from_sdkconfig(str(sdkconfig))
+
+            self.assertIsNotNone(config)
+            self.assertEqual(
+                config["wake_words"],
+                ["xiao ji", "ni hao xiao ji", "xiao ji xiao ji", "xiao ji tong xue"],
+            )
+            self.assertEqual(config["display"], "小稷")
+
     def test_wakenet10_copy_keeps_s3_p1_slice(self):
         with tempfile.TemporaryDirectory() as directory:
             src = Path(directory) / "wn10_nihaoxiaozhi"

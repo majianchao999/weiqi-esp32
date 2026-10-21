@@ -198,8 +198,16 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
     if (wake_detector_ == WakeDetector::kWakeNet) {
         afe_iface_->disable_wakenet(afe_data_);
     }
-    if (codec_->input_reference()) {
+    // A board with a software playback reference has no hardware loopback, so
+    // keep AEC enabled for the whole session instead of toggling it later.
+    if (codec_->input_reference() && !codec_->has_software_reference()) {
         afe_iface_->disable_aec(afe_data_);
+        aec_enabled_ = false;
+    } else {
+        aec_enabled_ = codec_->input_reference();
+    }
+    if (codec_->has_software_reference()) {
+        ESP_LOGI(TAG, "Software reference AEC stays enabled");
     }
     afe_iface_->print_pipeline(afe_data_);
 
@@ -274,6 +282,8 @@ void AfeAudioEngine::EnableWakeWordDetection(bool enable) {
     if (!HasWakeWord()) {
         return;
     }
+    ESP_LOGI(TAG, "Wake word detection %s (detector=%d)",
+             enable ? "enabled" : "disabled", static_cast<int>(wake_detector_));
 
     // WakeNet enable/disable on the AFE instance is applied by ProcessingTask
     // (see ApplyAfeControls), driven by the kWakeWordEnabled bit.
@@ -382,12 +392,17 @@ void AfeAudioEngine::ApplyAfeControls() {
         }
     }
     if (codec_->input_reference()) {
-        const bool enable_aec = (bits & kWakeWordEnabled) ||
-                                (device_aec_enabled_.load() && (bits & kVoiceProcessingEnabled));
-        if (enable_aec) {
-            afe_iface_->enable_aec(afe_data_);
-        } else {
-            afe_iface_->disable_aec(afe_data_);
+        const bool enable_aec =
+            codec_->has_software_reference() || (bits & kWakeWordEnabled) ||
+            (device_aec_enabled_.load() && (bits & kVoiceProcessingEnabled));
+        if (enable_aec != aec_enabled_) {
+            if (enable_aec) {
+                afe_iface_->enable_aec(afe_data_);
+            } else {
+                afe_iface_->disable_aec(afe_data_);
+            }
+            aec_enabled_ = enable_aec;
+            ESP_LOGI(TAG, "AEC %s", enable_aec ? "enabled" : "disabled");
         }
     }
 }
@@ -443,6 +458,7 @@ void AfeAudioEngine::ProcessingTask() {
 
 void AfeAudioEngine::HandleWakeWordResult(const afe_fetch_result_t* result) {
     if (wake_detector_ == WakeDetector::kMultiNet) {
+        custom_wake_word_->SetPlaybackActive(codec_->is_playback_active());
         custom_wake_word_->FeedMono(result->data, result->data_size / sizeof(int16_t));
         return;
     }

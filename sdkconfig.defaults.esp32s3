@@ -1,5 +1,19 @@
-CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+# 维奇（Weiqi）默认构建配置：ESP32-S3 + WakeNet + AFE AEC
+CONFIG_BOARD_TYPE_WEIQI=y
+CONFIG_WEIQI_DISPLAY_NONE=y
 
+CONFIG_USE_AFE_WAKE_WORD=y
+CONFIG_USE_CUSTOM_WAKE_WORD=n
+CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=y
+CONFIG_SR_WN_WN9S_NIHAOXIAOZHI=n
+CONFIG_SR_WN_WN9_XIAOLONGXIAOLONG_TTS=n
+CONFIG_WAKE_WORD_DETECTION_IN_LISTENING=y
+
+# Keep the camera DMA bounce buffer out of internal SRAM so AFE/WakeNet10
+# still has a usable internal heap after boot.
+CONFIG_CAMERA_PSRAM_DMA=y
+
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
 CONFIG_SPIRAM=y
@@ -19,23 +33,11 @@ CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
 CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 
-CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=y
-
-# Keep the camera DMA bounce buffer out of internal SRAM so AFE/WakeNet10
-# still has a usable internal heap after boot.
-CONFIG_CAMERA_PSRAM_DMA=y
-
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
-
 CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=1536
 
-# LVGL Graphics
+# LVGL Graphics（无屏构建不初始化 LVGL；保留以便以后接屏）
 CONFIG_LV_USE_SNAPSHOT=y
-# Builtin TLSF pool in PSRAM (lvgl_psram_pool.h). Keep the base pool small
-# enough for 2MB PSRAM boards; 8MB boards add extra pools in lcd_display.cc
-# (chunked to LV_MEM_SIZE — TLSF rejects a single add_pool larger than this).
-# Variants that set CONFIG_SPIRAM=n are switched back to CLIB malloc in
-# scripts/build.py; do not repeat that override on each board.
 CONFIG_LV_USE_BUILTIN_MALLOC=y
 # CONFIG_LV_USE_CLIB_MALLOC is not set
 CONFIG_LV_MEM_SIZE_KILOBYTES=1024

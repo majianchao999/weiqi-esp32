@@ -70,6 +70,9 @@ private:
     int frame_samples_ = 0;
     bool is_speaking_ = false;
     std::atomic<bool> device_aec_enabled_{false};
+    // Current AEC state of the AFE instance; software-reference boards keep
+    // AEC permanently enabled because the reference is always available.
+    bool aec_enabled_ = false;
     // Deferred AFE buffer reset, performed by ProcessingTask (see UpdateActiveState)
     std::atomic<bool> reset_pending_{false};
     // Deferred WakeNet/AEC toggles, applied by ProcessingTask (see ApplyAfeControls)

@@ -9,6 +9,7 @@
 class WifiBoard : public Board {
 protected:
     esp_timer_handle_t connect_timer_ = nullptr;
+    esp_timer_handle_t connect_reminder_timer_ = nullptr;
     bool in_config_mode_ = false;
     NetworkEventCallback network_event_callback_ = nullptr;
 
@@ -35,6 +36,16 @@ protected:
      * WiFi connection timeout callback
      */
     static void OnWifiConnectTimeout(void* arg);
+
+    /**
+     * Periodic audible reminder while waiting for WiFi
+     */
+    static void OnWifiConnectReminder(void* arg);
+
+    /**
+     * Stop the connection timeout and reminder timers
+     */
+    void StopConnectTimers();
 
 public:
     WifiBoard();

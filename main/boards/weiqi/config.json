@@ -1,0 +1,9 @@
+{
+    "type": "weiqi",
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "weiqi"
+        }
+    ]
+}

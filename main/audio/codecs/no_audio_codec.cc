@@ -7,6 +7,19 @@
 
 #define TAG "NoAudioCodec"
 
+// Keep enough playback history to cover the I2S DMA lead plus the acoustic
+// delay between the speaker and the microphone (roughly 100 ms).
+static constexpr size_t kReferenceBufferSamples = 4096;
+
+NoAudioCodec::NoAudioCodec(bool input_reference) {
+    input_reference_ = input_reference;
+    input_channels_ = input_reference ? 2 : 1;
+    if (input_reference) {
+        reference_buffer_.resize(kReferenceBufferSamples);
+    }
+    ESP_LOGI(TAG, "Software AEC reference %s", input_reference ? "enabled" : "disabled");
+}
+
 NoAudioCodec::~NoAudioCodec() {
     if (rx_handle_ != nullptr) {
         ESP_ERROR_CHECK(i2s_channel_disable(rx_handle_));
@@ -16,7 +29,7 @@ NoAudioCodec::~NoAudioCodec() {
     }
 }
 
-NoAudioCodecDuplex::NoAudioCodecDuplex(int input_sample_rate, int output_sample_rate, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din) {
+NoAudioCodecDuplex::NoAudioCodecDuplex(int input_sample_rate, int output_sample_rate, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din, bool input_reference) : NoAudioCodec(input_reference) {
     duplex_ = true;
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
@@ -76,7 +89,7 @@ NoAudioCodecDuplex::NoAudioCodecDuplex(int input_sample_rate, int output_sample_
 }
 
 
-NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sample_rate, gpio_num_t spk_bclk, gpio_num_t spk_ws, gpio_num_t spk_dout, gpio_num_t mic_sck, gpio_num_t mic_ws, gpio_num_t mic_din) {
+NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sample_rate, gpio_num_t spk_bclk, gpio_num_t spk_ws, gpio_num_t spk_dout, gpio_num_t mic_sck, gpio_num_t mic_ws, gpio_num_t mic_din, bool input_reference) : NoAudioCodec(input_reference) {
     duplex_ = false;
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
@@ -145,7 +158,7 @@ NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sampl
     ESP_LOGI(TAG, "Simplex channels created");
 }
 
-NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sample_rate, gpio_num_t spk_bclk, gpio_num_t spk_ws, gpio_num_t spk_dout, i2s_std_slot_mask_t spk_slot_mask, gpio_num_t mic_sck, gpio_num_t mic_ws, gpio_num_t mic_din, i2s_std_slot_mask_t mic_slot_mask){
+NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sample_rate, gpio_num_t spk_bclk, gpio_num_t spk_ws, gpio_num_t spk_dout, i2s_std_slot_mask_t spk_slot_mask, gpio_num_t mic_sck, gpio_num_t mic_ws, gpio_num_t mic_din, i2s_std_slot_mask_t mic_slot_mask, bool input_reference) : NoAudioCodec(input_reference) {
     duplex_ = false;
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
@@ -235,6 +248,11 @@ int NoAudioCodec::Write(const int16_t* data, int samples) {
 
     size_t bytes_written;
     ESP_ERROR_CHECK(i2s_channel_write(tx_handle_, buffer.data(), samples * sizeof(int32_t), &bytes_written, portMAX_DELAY));
+    if (input_reference_ && bytes_written > 0) {
+        // Cache the post-volume playback signal so the AFE gets an echo
+        // reference that matches what the speaker is actually reproducing.
+        AppendReference(data, bytes_written / sizeof(int32_t), volume_factor);
+    }
     return bytes_written / sizeof(int32_t);
 }
 
@@ -242,17 +260,158 @@ int NoAudioCodec::Read(int16_t* dest, int samples) {
     size_t bytes_read;
     constexpr uint32_t kReadTimeoutMs = 200;
 
-    std::vector<int32_t> bit32_buffer(samples);
-    if (i2s_channel_read(rx_handle_, bit32_buffer.data(), samples * sizeof(int32_t), &bytes_read, kReadTimeoutMs) != ESP_OK) {
+    if (!input_reference_) {
+        std::vector<int32_t> bit32_buffer(samples);
+        if (i2s_channel_read(rx_handle_, bit32_buffer.data(), samples * sizeof(int32_t), &bytes_read, kReadTimeoutMs) != ESP_OK) {
+            return 0;
+        }
+
+        samples = bytes_read / sizeof(int32_t);
+        for (int i = 0; i < samples; i++) {
+            // INMP441/ICS43434 put their 24-bit sample in the high bits of the
+            // 32-bit I2S slot. Shifting by 16 (not 12) keeps the full range as
+            // 16-bit data; the old shift clipped normal speech, which destroys
+            // the linearity AEC depends on.
+            int32_t value = bit32_buffer[i] >> 16;
+            dest[i] = (value > INT16_MAX) ? INT16_MAX : (value < -INT16_MAX) ? -INT16_MAX : (int16_t)value;
+        }
+        return samples;
+    }
+
+    // Interleave microphone and playback reference as [M, R, M, R, ...] so the
+    // AFE can run AEC on the same signal that is being played.
+    const int frames = samples / input_channels_;
+    std::vector<int32_t> bit32_buffer(frames);
+    if (i2s_channel_read(rx_handle_, bit32_buffer.data(), frames * sizeof(int32_t), &bytes_read,
+                         kReadTimeoutMs) != ESP_OK) {
         return 0;
     }
 
-    samples = bytes_read / sizeof(int32_t);
-    for (int i = 0; i < samples; i++) {
-        int32_t value = bit32_buffer[i] >> 12;
-        dest[i] = (value > INT16_MAX) ? INT16_MAX : (value < -INT16_MAX) ? -INT16_MAX : (int16_t)value;
+    static int64_t last_diag_us = 0;
+    static int32_t raw_peak = 0;
+    static int32_t conv_peak = 0;
+    static uint32_t old_clip_count = 0;
+    const int64_t now_us = esp_timer_get_time();
+
+    const int read_frames = bytes_read / sizeof(int32_t);
+    for (int i = 0; i < read_frames; i++) {
+        int32_t raw = bit32_buffer[i];
+        int32_t old_value = raw >> 12;
+        if (old_value > INT16_MAX || old_value < -INT16_MAX) {
+            old_clip_count++;
+        }
+        int32_t value = raw >> 16;
+        int16_t sample =
+            (value > INT16_MAX) ? INT16_MAX : (value < -INT16_MAX) ? -INT16_MAX : (int16_t)value;
+        dest[i * input_channels_] = sample;
+
+        int32_t abs_raw = (raw == INT32_MIN) ? INT32_MAX : (raw < 0 ? -raw : raw);
+        int32_t abs_value = (sample < 0) ? -sample : sample;
+        if (abs_raw > raw_peak) {
+            raw_peak = abs_raw;
+        }
+        if (abs_value > conv_peak) {
+            conv_peak = abs_value;
+        }
     }
-    return samples;
+    PopReference(dest + 1, read_frames, input_channels_);
+
+    int32_t ref_peak = 0;
+    for (int i = 0; i < read_frames; i++) {
+        int16_t ref = dest[i * input_channels_ + 1];
+        int32_t abs_ref = ref < 0 ? -ref : ref;
+        if (abs_ref > ref_peak) {
+            ref_peak = abs_ref;
+        }
+    }
+    if (now_us - last_diag_us >= 2000000) {
+        ESP_LOGI(TAG,
+                 "Mic raw_peak=%ld conv_peak=%d old_clip=%lu ref_peak=%d ref_backlog=%u",
+                 static_cast<long>(raw_peak), static_cast<int>(conv_peak),
+                 static_cast<unsigned long>(old_clip_count), static_cast<int>(ref_peak),
+                 static_cast<unsigned>(GetReferenceBacklog()));
+        last_diag_us = now_us;
+        raw_peak = 0;
+        conv_peak = 0;
+        old_clip_count = 0;
+    }
+    return read_frames * input_channels_;
+}
+
+void NoAudioCodec::AppendReference(const int16_t* data, int samples, int32_t volume_factor) {
+    // The reference is captured after the playback block is handed to I2S. The
+    // ring's natural backlog already delays it by roughly one playback block,
+    // which keeps it ahead of (causal to) the acoustic echo. Extra prefill
+    // would make the reference arrive after the echo, which AEC cannot model.
+    constexpr int64_t kReferenceIdleResetUs = 200000;
+    constexpr int kReferenceDelayMs = 0;
+    const int64_t now_us = esp_timer_get_time();
+    const int64_t last_write_us = last_reference_write_us_.load(std::memory_order_relaxed);
+    const bool prime =
+        !reference_primed_ || now_us - last_write_us > kReferenceIdleResetUs;
+    last_reference_write_us_.store(now_us, std::memory_order_relaxed);
+
+    std::lock_guard<std::mutex> lock(reference_mutex_);
+    const size_t capacity = reference_buffer_.size();
+    if (capacity == 0) {
+        return;
+    }
+    if (prime) {
+        reference_read_pos_ = reference_write_pos_ = 0;
+        size_t delay = static_cast<size_t>(output_sample_rate_) * kReferenceDelayMs / 1000;
+        if (delay >= capacity) {
+            delay = capacity - 1;
+        }
+        for (size_t i = 0; i < delay; i++) {
+            reference_buffer_[reference_write_pos_] = 0;
+            reference_write_pos_ = (reference_write_pos_ + 1) % capacity;
+        }
+        reference_primed_ = true;
+    }
+    for (int i = 0; i < samples; i++) {
+        int32_t scaled = (static_cast<int32_t>(data[i]) * volume_factor) >> 16;
+        size_t next = (reference_write_pos_ + 1) % capacity;
+        if (next == reference_read_pos_) {
+            // Playback outran the microphone consumer; drop the oldest sample.
+            reference_read_pos_ = (reference_read_pos_ + 1) % capacity;
+        }
+        reference_buffer_[reference_write_pos_] = static_cast<int16_t>(scaled);
+        reference_write_pos_ = next;
+    }
+}
+
+size_t NoAudioCodec::GetReferenceBacklog() {
+    std::lock_guard<std::mutex> lock(reference_mutex_);
+    const size_t capacity = reference_buffer_.size();
+    if (capacity == 0) {
+        return 0;
+    }
+    return (reference_write_pos_ + capacity - reference_read_pos_) % capacity;
+}
+
+bool NoAudioCodec::is_playback_active() {
+    const int64_t last_write_us = last_reference_write_us_.load(std::memory_order_relaxed);
+    if (last_write_us == 0) {
+        return false;
+    }
+    if (GetReferenceBacklog() > 0) {
+        return true;
+    }
+    // Keep the flag set briefly across playback gaps between TTS packets.
+    return esp_timer_get_time() - last_write_us < 300000;
+}
+
+void NoAudioCodec::PopReference(int16_t* dest, size_t samples, size_t stride) {
+    std::lock_guard<std::mutex> lock(reference_mutex_);
+    const size_t capacity = reference_buffer_.size();
+    for (size_t i = 0; i < samples; i++) {
+        if (capacity == 0 || reference_read_pos_ == reference_write_pos_) {
+            dest[i * stride] = 0;
+            continue;
+        }
+        dest[i * stride] = reference_buffer_[reference_read_pos_];
+        reference_read_pos_ = (reference_read_pos_ + 1) % capacity;
+    }
 }
 
 void NoAudioCodec::EnableInput(bool enable) {

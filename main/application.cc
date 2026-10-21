@@ -1012,20 +1012,25 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     }
 
     ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
+    // Uploading the recorded wake word makes the server run ASR on it. With a
+    // custom wake word this is intermittently transcribed (often with the tail
+    // of the previous TTS) as an exit intent, so the device answers "再见"
+    // right after being woken. Keep the wake interaction local and let the
+    // first real utterance be the first audio the server sees.
+    constexpr bool kUploadWakeWordRecording = false;
+    if (kUploadWakeWordRecording) {
 #if CONFIG_SEND_WAKE_WORD_DATA
-    // Encode and send the wake word data to the server
-    while (auto packet = audio_service_.PopWakeWordPacket()) {
-        protocol_->SendAudio(std::move(packet));
-    }
-    // Set the chat state to wake word detected
-    protocol_->SendWakeWordDetected(wake_word);
-    SetListeningMode(GetDefaultListeningMode());
-#else
-    // Set flag to play popup sound after state changes to listening
-    // (PlaySound here would be cleared by ResetDecoder in EnableVoiceProcessing)
-    play_popup_on_listening_ = true;
-    SetListeningMode(GetDefaultListeningMode());
+        while (auto packet = audio_service_.PopWakeWordPacket()) {
+            protocol_->SendAudio(std::move(packet));
+        }
+        protocol_->SendWakeWordDetected(wake_word);
 #endif
+    } else {
+        // Play the popup after the state change; PlaySound here would be
+        // cleared by ResetDecoder in EnableVoiceProcessing.
+        play_popup_on_listening_ = true;
+    }
+    SetListeningMode(GetDefaultListeningMode());
 }
 
 void Application::HandleStateChangedEvent() {
