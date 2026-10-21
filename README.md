@@ -1,3 +1,14 @@
+# Weiqi (维奇) board firmware
+
+This repository contains the firmware for the **Weiqi (维奇)** board, based on the
+upstream [XiaoZhi ESP32 project](https://github.com/78/xiaozhi-esp32) (MIT).
+
+- Board pinout, audio/AEC configuration and build instructions:
+  [main/boards/weiqi/README.md](main/boards/weiqi/README.md)
+- Software license: MIT (see [LICENSE](LICENSE)); upstream copyright notices retained.
+
+---
+
 # An MCP-based Chatbot
 
 (English | [中文](README_zh.md) | [日本語](README_ja.md))
